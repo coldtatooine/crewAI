@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -11,6 +12,37 @@ from api.knowledge_registry import KnowledgeRegistry
 import os
 
 app = FastAPI(title="CrewAI API", description="API to run CrewAI crews", version="1.0.0")
+
+app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root():
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <title>CrewAI</title>
+            <style>
+                body {
+                    display: flex;
+                    justify_content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background-color: #f0f2f5;
+                }
+                img {
+                    max-width: 100%;
+                    height: auto;
+                }
+            </style>
+        </head>
+        <body>
+            <img src="/assets/galeroso-logo.png" alt="Logo">
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content, status_code=200)
 security = HTTPBearer()
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
