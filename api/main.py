@@ -13,7 +13,24 @@ import os
 
 app = FastAPI(title="CrewAI API", description="API to run CrewAI crews", version="1.0.0")
 
-app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+# Resolve absolute path to assets (one level up from api/main.py if structure is api/main.py and assets/)
+# Or relative to CWD /app
+import os
+from pathlib import Path
+
+# Assuming running from root (/app), assets should be at /app/assets
+# But let's be robust and find it relative to this file
+# this file: /app/api/main.py
+# parent: /app/api
+# parent.parent: /app
+BASE_DIR = Path(__file__).resolve().parent.parent
+ASSETS_DIR = BASE_DIR / "assets"
+
+# Create assets directory if it doesn't exist (prevent runtime crash)
+if not ASSETS_DIR.exists():
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
