@@ -1,5 +1,6 @@
 import requests
 import time
+import os
 
 def test_api():
     print("Testing API...")
@@ -19,8 +20,11 @@ def test_api():
     # 2. Kickoff Crew
     print("\nKickoff Crew...")
     payload = {"topic": "Artificial Intelligence"}
+    token = os.environ.get("API_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    
     try:
-        response = requests.post(f"{url}/crew/kickoff", json=payload)
+        response = requests.post(f"{url}/crew/kickoff", json=payload, headers=headers)
         if response.status_code == 200:
             print("✅ Crew kickoff passed")
             print("Response:", response.json())
