@@ -1,0 +1,11 @@
+agents:
+- allow_delegation: false
+  backstory: You are a world class researcher working on a major project
+  goal: Discover new insights about {topic}
+  role: Researcher
+  verbose: true
+- allow_delegation: false
+  backstory: You are a senior analyst capable of summarizing complex data
+  goal: Create a detailed report based on the findings
+  role: Reporting Analyst
+  verbose: true

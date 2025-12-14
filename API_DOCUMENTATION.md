@@ -1,6 +1,6 @@
-# CrewAI API Documentation
+# CrewAI Studio API Documentation
 
-Base URL: `https://crew.agritalk.com.br`
+Base URL: `https://crew.agritalk.com.br` (or `http://localhost:8000` locally)
 
 ## Authentication
 This API uses Bearer Token authentication.
@@ -18,56 +18,128 @@ Checks if the API service is running and healthy. This endpoint is public (no au
 - **Method**: `GET`
 - **Response**:
     ```json
+    { "status": "healthy" }
+    ```
+
+---
+
+### 2. Agents Management
+
+#### List Agents
+- **URL**: `/agents`
+- **Method**: `GET`
+- **Response**: List of AgentConfig objects.
+
+#### Create Agent
+- **URL**: `/agents`
+- **Method**: `POST`
+- **Body**:
+    ```json
     {
-      "status": "healthy"
+        "role": "Researcher",
+        "goal": "Research topics",
+        "backstory": "Expert researcher",
+        "verbose": true,
+        "allow_delegation": false,
+        "tools": ["ToolName"],
+        "knowledge_sources": ["file.txt"]
     }
     ```
 
-### 2. Kickoff Crew
-Triggers the CrewAI agent(s) to start processing a specific topic.
+#### Update Agent
+- **URL**: `/agents/{role}`
+- **Method**: `PUT`
+- **Body**: Same as Create Agent.
+
+#### Delete Agent
+- **URL**: `/agents/{role}`
+- **Method**: `DELETE`
+
+#### Ask Agent (Interaction)
+Execute a prompt with a specific agent.
+- **URL**: `/agent/{role}/ask`
+- **Method**: `POST`
+- **Body**: `{ "prompt": "What is AI?" }`
+
+---
+
+### 3. Tasks Management
+
+#### List Tasks
+- **URL**: `/tasks`
+- **Method**: `GET`
+
+#### Create Task
+- **URL**: `/tasks`
+- **Method**: `POST`
+- **Body**:
+    ```json
+    {
+        "name": "TaskName",
+        "description": "Task description",
+        "expected_output": "Output expectation",
+        "agent_role": "Researcher"
+    }
+    ```
+
+#### Update Task
+- **URL**: `/tasks/{name}`
+- **Method**: `PUT`
+
+#### Delete Task
+- **URL**: `/tasks/{name}`
+- **Method**: `DELETE`
+
+---
+
+### 4. Tools Management
+
+#### List Tools
+- **URL**: `/tools`
+- **Method**: `GET`
+
+#### List Available Tool Types
+- **URL**: `/tools/available`
+- **Method**: `GET`
+
+#### Create Tool
+- **URL**: `/tools`
+- **Method**: `POST`
+- **Body**:
+    ```json
+    {
+        "name": "MySearch",
+        "type": "SerperDevTool",
+        "arguments": { "n_results": 5 }
+    }
+    ```
+
+#### Delete Tool
+- **URL**: `/tools/{name}`
+- **Method**: `DELETE`
+
+---
+
+### 5. Knowledge Management
+
+#### Upload Knowledge File
+- **URL**: `/knowledge/upload`
+- **Method**: `POST`
+- **Body**: Multipart file upload (`file` field).
+
+#### List Knowledge Files
+- **URL**: `/knowledge`
+- **Method**: `GET`
+
+#### Delete Knowledge File
+- **URL**: `/knowledge/{filename}`
+- **Method**: `DELETE`
+
+---
+
+### 6. Crew Execution (Legacy)
+Triggers the CrewAI agent(s) to start processing a specific topic using a default logic.
 
 - **URL**: `/crew/kickoff`
 - **Method**: `POST`
-- **Headers**:
-    - `Content-Type: application/json`
-- **Request Body**:
-    ```json
-    {
-      "topic": "Your research topic here"
-    }
-    ```
-- **Success Response (200 OK)**:
-    ```json
-    {
-      "result": "The final output string from the crew.",
-      "status": "success"
-    }
-    ```
-- **Error Response (500 Internal Server Error)**:
-    ```json
-    {
-      "detail": "Error description"
-    }
-    ```
-
-## Example Usage
-
-### CURL
-```bash
-curl -X POST https://crew.agritalk.com.br/crew/kickoff \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_SECRET_TOKEN" \
-  -d '{"topic": "Future of Agriculture"}'
-```
-
-### Python
-```python
-import requests
-
-url = "https://crew.agritalk.com.br/crew/kickoff"
-headers = {"Authorization": "Bearer YOUR_SECRET_TOKEN"}
-payload = {"topic": "Future of Agriculture"}
-
-response = requests.post(url, json=payload, headers=headers)
-print(response.json())
-```
+- **Body**: `{ "topic": "Your topic" }`

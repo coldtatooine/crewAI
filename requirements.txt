@@ -2,3 +2,4 @@ fastapi
 uvicorn
 crewai[google-genai]
 google-generativeai
+crewai-tools
