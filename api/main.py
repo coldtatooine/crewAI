@@ -54,8 +54,8 @@ async def read_root():
                 }
             </style>
         </head>
-        <body>
-            <img src="/assets/galeroso-logo.png" alt="Logo">
+        <body style="display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #0A0D1F;">
+            <img src="/assets/galeroso-logo.png" alt="Logo" height="10rem" width="10rem">
         </body>
     </html>
     """
