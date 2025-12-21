@@ -83,8 +83,6 @@ class AgentConfig(BaseModel):
     backstory: str
     verbose: bool = True
     allow_delegation: bool = False
-    verbose: bool = True
-    allow_delegation: bool = False
     tools: List[str] = [] # List of tool names
     knowledge_sources: List[str] = [] # List of filenames
 
@@ -163,11 +161,6 @@ def delete_task(name: str, token: str = Depends(verify_token)):
         raise HTTPException(status_code=404, detail="Task not found")
     return {"status": "success", "message": f"Task {name} deleted"}
 
-@app.delete("/tasks/{name}")
-def delete_task(name: str, token: str = Depends(verify_token)):
-    deleted = task_registry.delete_task(name)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Task not found")
     return {"status": "success", "message": f"Task {name} deleted"}
 
 # --- Tools Endpoints ---
@@ -200,7 +193,6 @@ def delete_tool(name: str, token: str = Depends(verify_token)):
     if not deleted:
         raise HTTPException(status_code=404, detail="Tool not found")
     return {"status": "success", "message": f"Tool {name} deleted"}
-
     return {"status": "success", "message": f"Tool {name} deleted"}
 
 # --- Knowledge Endpoints ---
