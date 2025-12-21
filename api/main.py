@@ -49,13 +49,13 @@ async def read_root():
                     background-color: #f0f2f5;
                 }
                 img {
-                    max-width: 100%;
+                    width: 20rem;
                     height: auto;
                 }
             </style>
         </head>
         <body style="display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #0A0D1F;">
-            <img src="/assets/galeroso-crew-ui-logo.png" alt="Logo" height="10rem" width="10rem">
+            <img src="/assets/galeroso-crew-ui-logo.png" alt="Galeroso Crew UI Logo">
         </body>
     </html>
     """
