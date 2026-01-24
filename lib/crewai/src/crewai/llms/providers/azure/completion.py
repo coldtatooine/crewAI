@@ -443,7 +443,7 @@ class AzureCompletion(BaseLLM):
             params["presence_penalty"] = self.presence_penalty
         if self.max_tokens is not None:
             params["max_tokens"] = self.max_tokens
-        if self.stop:
+        if self.stop and self.supports_stop_words():
             params["stop"] = self.stop
 
         # Handle tools/functions for Azure OpenAI models
@@ -674,7 +674,7 @@ class AzureCompletion(BaseLLM):
         self,
         update: StreamingChatCompletionsUpdate,
         full_response: str,
-        tool_calls: dict[str, dict[str, str]],
+        tool_calls: dict[int, dict[str, Any]],
         from_task: Any | None = None,
         from_agent: Any | None = None,
     ) -> str:
@@ -702,25 +702,45 @@ class AzureCompletion(BaseLLM):
                 )
 
             if choice.delta and choice.delta.tool_calls:
-                for tool_call in choice.delta.tool_calls:
-                    call_id = tool_call.id or "default"
-                    if call_id not in tool_calls:
-                        tool_calls[call_id] = {
+                for idx, tool_call in enumerate(choice.delta.tool_calls):
+                    if idx not in tool_calls:
+                        tool_calls[idx] = {
+                            "id": tool_call.id,
                             "name": "",
                             "arguments": "",
                         }
+                    elif tool_call.id and not tool_calls[idx]["id"]:
+                        tool_calls[idx]["id"] = tool_call.id
 
                     if tool_call.function and tool_call.function.name:
-                        tool_calls[call_id]["name"] = tool_call.function.name
+                        tool_calls[idx]["name"] = tool_call.function.name
                     if tool_call.function and tool_call.function.arguments:
-                        tool_calls[call_id]["arguments"] += tool_call.function.arguments
+                        tool_calls[idx]["arguments"] += tool_call.function.arguments
+
+                    self._emit_stream_chunk_event(
+                        chunk=tool_call.function.arguments
+                        if tool_call.function and tool_call.function.arguments
+                        else "",
+                        from_task=from_task,
+                        from_agent=from_agent,
+                        tool_call={
+                            "id": tool_calls[idx]["id"],
+                            "function": {
+                                "name": tool_calls[idx]["name"],
+                                "arguments": tool_calls[idx]["arguments"],
+                            },
+                            "type": "function",
+                            "index": idx,
+                        },
+                        call_type=LLMCallType.TOOL_CALL,
+                    )
 
         return full_response
 
     def _finalize_streaming_response(
         self,
         full_response: str,
-        tool_calls: dict[str, dict[str, str]],
+        tool_calls: dict[int, dict[str, Any]],
         usage_data: dict[str, int],
         params: AzureCompletionParams,
         available_functions: dict[str, Any] | None = None,
@@ -804,7 +824,7 @@ class AzureCompletion(BaseLLM):
     ) -> str | Any:
         """Handle streaming chat completion."""
         full_response = ""
-        tool_calls: dict[str, dict[str, Any]] = {}
+        tool_calls: dict[int, dict[str, Any]] = {}
 
         usage_data = {"total_tokens": 0}
         for update in self.client.complete(**params):  # type: ignore[arg-type]
@@ -870,7 +890,7 @@ class AzureCompletion(BaseLLM):
     ) -> str | Any:
         """Handle streaming chat completion asynchronously."""
         full_response = ""
-        tool_calls: dict[str, dict[str, Any]] = {}
+        tool_calls: dict[int, dict[str, Any]] = {}
 
         usage_data = {"total_tokens": 0}
 
@@ -911,8 +931,28 @@ class AzureCompletion(BaseLLM):
         return self.is_openai_model
 
     def supports_stop_words(self) -> bool:
-        """Check if the model supports stop words."""
-        return True  # Most Azure models support stop sequences
+        """Check if the model supports stop words.
+
+        Models using the Responses API (GPT-5 family, o-series reasoning models,
+        computer-use-preview) do not support stop sequences.
+        See: https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-models/concepts/models-sold-directly-by-azure
+        """
+        model_lower = self.model.lower() if self.model else ""
+
+        if "gpt-5" in model_lower:
+            return False
+
+        o_series_models = ["o1", "o3", "o4", "o1-mini", "o3-mini", "o4-mini"]
+
+        responses_api_models = ["computer-use-preview"]
+
+        unsupported_stop_models = o_series_models + responses_api_models
+
+        for unsupported in unsupported_stop_models:
+            if unsupported in model_lower:
+                return False
+
+        return True
 
     def get_context_window_size(self) -> int:
         """Get the context window size for the model."""
