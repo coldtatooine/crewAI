@@ -1,6 +1,7 @@
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 import os
+from api.agent_registry import AgentRegistry
 from api.task_registry import TaskRegistry
 from api.tool_registry import ToolRegistry
 from api.knowledge_registry import KnowledgeRegistry
