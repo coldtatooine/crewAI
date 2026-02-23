@@ -71,7 +71,6 @@ from crewai.mcp import (
 from crewai.mcp.transports.http import HTTPTransport
 from crewai.mcp.transports.sse import SSETransport
 from crewai.mcp.transports.stdio import StdioTransport
-from crewai.memory.contextual.contextual_memory import ContextualMemory
 from crewai.rag.embeddings.types import EmbedderConfig
 from crewai.security.fingerprint import Fingerprint
 from crewai.tools.agent_tools.agent_tools import AgentTools
@@ -89,11 +88,19 @@ from crewai.utilities.guardrail_types import GuardrailType
 from crewai.utilities.llm_utils import create_llm
 from crewai.utilities.prompts import Prompts, StandardPromptResult, SystemPromptResult
 from crewai.utilities.pydantic_schema_utils import generate_model_description
+from crewai.utilities.string_utils import sanitize_tool_name
 from crewai.utilities.token_counter_callback import TokenCalcHandler
 from crewai.utilities.training_handler import CrewTrainingHandler
 
 
+try:
+    from crewai.a2a.types import AgentResponseProtocol
+except ImportError:
+    AgentResponseProtocol = None  # type: ignore[assignment, misc]
+
+
 if TYPE_CHECKING:
+    from crewai_files import FileInput
     from crewai_tools import CodeInterpreterTool
 
     from crewai.a2a.config import A2AClientConfig, A2AConfig, A2AServerConfig
@@ -109,6 +116,8 @@ MCP_CONNECTION_TIMEOUT: Final[int] = 10
 MCP_TOOL_EXECUTION_TIMEOUT: Final[int] = 30
 MCP_DISCOVERY_TIMEOUT: Final[int] = 15
 MCP_MAX_RETRIES: Final[int] = 3
+
+_passthrough_exceptions: tuple[type[Exception], ...] = ()
 
 # Simple in-memory cache for MCP tool schemas (duration: 5 minutes)
 _mcp_schema_cache: dict[str, Any] = {}
@@ -187,7 +196,8 @@ class Agent(BaseAgent):
     )
     multimodal: bool = Field(
         default=False,
-        description="Whether the agent is multimodal.",
+        deprecated=True,
+        description="[DEPRECATED, will be removed in v2.0 - pass files natively.] Whether the agent is multimodal.",
     )
     inject_date: bool = Field(
         default=False,
@@ -300,19 +310,28 @@ class Agent(BaseAgent):
             raise ValueError(f"Invalid Knowledge Configuration: {e!s}") from e
 
     def _is_any_available_memory(self) -> bool:
-        """Check if any memory is available."""
-        if not self.crew:
-            return False
+        """Check if unified memory is available (agent or crew)."""
+        if getattr(self, "memory", None):
+            return True
+        if self.crew and getattr(self.crew, "_memory", None):
+            return True
+        return False
 
-        memory_attributes = [
-            "memory",
-            "_short_term_memory",
-            "_long_term_memory",
-            "_entity_memory",
-            "_external_memory",
-        ]
+    def _supports_native_tool_calling(self, tools: list[BaseTool]) -> bool:
+        """Check if the LLM supports native function calling with the given tools.
 
-        return any(getattr(self.crew, attr) for attr in memory_attributes)
+        Args:
+            tools: List of tools to check against.
+
+        Returns:
+            True if native function calling is supported and tools are available.
+        """
+        return (
+            hasattr(self.llm, "supports_function_calling")
+            and callable(getattr(self.llm, "supports_function_calling", None))
+            and self.llm.supports_function_calling()
+            and len(tools) > 0
+        )
 
     def execute_task(
         self,
@@ -360,15 +379,16 @@ class Agent(BaseAgent):
             memory = ""
 
             try:
-                contextual_memory = ContextualMemory(
-                    self.crew._short_term_memory,
-                    self.crew._long_term_memory,
-                    self.crew._entity_memory,
-                    self.crew._external_memory,
-                    agent=self,
-                    task=task,
+                unified_memory = getattr(self, "memory", None) or (
+                    getattr(self.crew, "_memory", None) if self.crew else None
                 )
-                memory = contextual_memory.build_context_for_task(task, context or "")
+                if unified_memory is not None:
+                    query = task.description
+                    matches = unified_memory.recall(query, limit=10)
+                    if matches:
+                        memory = "Relevant memories:\n" + "\n".join(
+                            f"- {m.record.content}" for m in matches
+                        )
                 if memory.strip() != "":
                     task_prompt += self.i18n.slice("memory").format(memory=memory)
 
@@ -454,6 +474,8 @@ class Agent(BaseAgent):
                     ),
                 )
                 raise e
+            if isinstance(e, _passthrough_exceptions):
+                raise
             self._times_executed += 1
             if self._times_executed > self.max_retry_limit:
                 crewai_event_bus.emit(
@@ -471,9 +493,22 @@ class Agent(BaseAgent):
             self._rpm_controller.stop_rpm_counter()
 
         result = process_tool_results(self, result)
+
+        output_for_event = result
+        if (
+            AgentResponseProtocol is not None
+            and isinstance(result, BaseModel)
+            and isinstance(result, AgentResponseProtocol)
+        ):
+            output_for_event = str(result.message)
+        elif not isinstance(result, str):
+            output_for_event = str(result)
+
         crewai_event_bus.emit(
             self,
-            event=AgentExecutionCompletedEvent(agent=self, task=task, output=result),
+            event=AgentExecutionCompletedEvent(
+                agent=self, task=task, output=output_for_event
+            ),
         )
 
         save_last_messages(self)
@@ -582,17 +617,16 @@ class Agent(BaseAgent):
             memory = ""
 
             try:
-                contextual_memory = ContextualMemory(
-                    self.crew._short_term_memory,
-                    self.crew._long_term_memory,
-                    self.crew._entity_memory,
-                    self.crew._external_memory,
-                    agent=self,
-                    task=task,
+                unified_memory = getattr(self, "memory", None) or (
+                    getattr(self.crew, "_memory", None) if self.crew else None
                 )
-                memory = await contextual_memory.abuild_context_for_task(
-                    task, context or ""
-                )
+                if unified_memory is not None:
+                    query = task.description
+                    matches = unified_memory.recall(query, limit=10)
+                    if matches:
+                        memory = "Relevant memories:\n" + "\n".join(
+                            f"- {m.record.content}" for m in matches
+                        )
                 if memory.strip() != "":
                     task_prompt += self.i18n.slice("memory").format(memory=memory)
 
@@ -673,6 +707,8 @@ class Agent(BaseAgent):
                     ),
                 )
                 raise e
+            if isinstance(e, _passthrough_exceptions):
+                raise
             self._times_executed += 1
             if self._times_executed > self.max_retry_limit:
                 crewai_event_bus.emit(
@@ -690,9 +726,22 @@ class Agent(BaseAgent):
             self._rpm_controller.stop_rpm_counter()
 
         result = process_tool_results(self, result)
+
+        output_for_event = result
+        if (
+            AgentResponseProtocol is not None
+            and isinstance(result, BaseModel)
+            and isinstance(result, AgentResponseProtocol)
+        ):
+            output_for_event = str(result.message)
+        elif not isinstance(result, str):
+            output_for_event = str(result)
+
         crewai_event_bus.emit(
             self,
-            event=AgentExecutionCompletedEvent(agent=self, task=task, output=result),
+            event=AgentExecutionCompletedEvent(
+                agent=self, task=task, output=output_for_event
+            ),
         )
 
         save_last_messages(self)
@@ -762,9 +811,12 @@ class Agent(BaseAgent):
         raw_tools: list[BaseTool] = tools or self.tools or []
         parsed_tools = parse_tools(raw_tools)
 
+        use_native_tool_calling = self._supports_native_tool_calling(raw_tools)
+
         prompt = Prompts(
             agent=self,
             has_tools=len(raw_tools) > 0,
+            use_native_tool_calling=use_native_tool_calling,
             i18n=self.i18n,
             use_system_prompt=self.use_system_prompt,
             system_template=self.system_template,
@@ -1320,10 +1372,10 @@ class Agent(BaseAgent):
                     args_schema = None
                     if hasattr(tool, "inputSchema") and tool.inputSchema:
                         args_schema = self._json_schema_to_pydantic(
-                            tool.name, tool.inputSchema
+                            sanitize_tool_name(tool.name), tool.inputSchema
                         )
 
-                    schemas[tool.name] = {
+                    schemas[sanitize_tool_name(tool.name)] = {
                         "description": getattr(tool, "description", ""),
                         "args_schema": args_schema,
                     }
@@ -1479,7 +1531,7 @@ class Agent(BaseAgent):
         """
         return "\n".join(
             [
-                f"Tool name: {tool.name}\nTool description:\n{tool.description}"
+                f"Tool name: {sanitize_tool_name(tool.name)}\nTool description:\n{tool.description}"
                 for tool in tools
             ]
         )
@@ -1624,7 +1676,8 @@ class Agent(BaseAgent):
         self,
         messages: str | list[LLMMessage],
         response_format: type[Any] | None = None,
-    ) -> tuple[AgentExecutor, dict[str, str], dict[str, Any], list[CrewStructuredTool]]:
+        input_files: dict[str, FileInput] | None = None,
+    ) -> tuple[AgentExecutor, dict[str, Any], dict[str, Any], list[CrewStructuredTool]]:
         """Prepare common setup for kickoff execution.
 
         This method handles all the common preparation logic shared between
@@ -1634,6 +1687,7 @@ class Agent(BaseAgent):
         Args:
             messages: Either a string query or a list of message dictionaries.
             response_format: Optional Pydantic model for structured output.
+            input_files: Optional dict of named files to attach to the message.
 
         Returns:
             Tuple of (executor, inputs, agent_info, parsed_tools) ready for execution.
@@ -1650,6 +1704,18 @@ class Agent(BaseAgent):
 
         # Prepare tools
         raw_tools: list[BaseTool] = self.tools or []
+
+        # Inject memory tools for standalone kickoff (crew path handles its own)
+        agent_memory = getattr(self, "memory", None)
+        if agent_memory is not None:
+            from crewai.tools.memory_tools import create_memory_tools
+
+            existing_names = {sanitize_tool_name(t.name) for t in raw_tools}
+            raw_tools.extend(
+                mt for mt in create_memory_tools(agent_memory)
+                if sanitize_tool_name(mt.name) not in existing_names
+            )
+
         parsed_tools = parse_tools(raw_tools)
 
         # Build agent_info for backward-compatible event emission
@@ -1663,9 +1729,11 @@ class Agent(BaseAgent):
         }
 
         # Build prompt for standalone execution
+        use_native_tool_calling = self._supports_native_tool_calling(raw_tools)
         prompt = Prompts(
             agent=self,
             has_tools=len(raw_tools) > 0,
+            use_native_tool_calling=use_native_tool_calling,
             i18n=self.i18n,
             use_system_prompt=self.use_system_prompt,
             system_template=self.system_template,
@@ -1708,20 +1776,71 @@ class Agent(BaseAgent):
             i18n=self.i18n,
         )
 
-        # Format messages
+        all_files: dict[str, Any] = {}
         if isinstance(messages, str):
             formatted_messages = messages
         else:
             formatted_messages = "\n".join(
                 str(msg.get("content", "")) for msg in messages if msg.get("content")
             )
+            for msg in messages:
+                if msg.get("files"):
+                    all_files.update(msg["files"])
+
+        if input_files:
+            all_files.update(input_files)
+
+        # Inject memory context for standalone kickoff (recall before execution)
+        if agent_memory is not None:
+            try:
+                crewai_event_bus.emit(
+                    self,
+                    event=MemoryRetrievalStartedEvent(
+                        task_id=None,
+                        source_type="agent_kickoff",
+                        from_agent=self,
+                    ),
+                )
+                start_time = time.time()
+                matches = agent_memory.recall(formatted_messages, limit=10)
+                memory_block = ""
+                if matches:
+                    memory_block = "Relevant memories:\n" + "\n".join(
+                        f"- {m.record.content}" for m in matches
+                    )
+                if memory_block:
+                    formatted_messages += "\n\n" + self.i18n.slice("memory").format(
+                        memory=memory_block
+                    )
+                crewai_event_bus.emit(
+                    self,
+                    event=MemoryRetrievalCompletedEvent(
+                        task_id=None,
+                        memory_content=memory_block,
+                        retrieval_time_ms=(time.time() - start_time) * 1000,
+                        source_type="agent_kickoff",
+                        from_agent=self,
+                    ),
+                )
+            except Exception as e:
+                crewai_event_bus.emit(
+                    self,
+                    event=MemoryRetrievalFailedEvent(
+                        task_id=None,
+                        source_type="agent_kickoff",
+                        from_agent=self,
+                        error=str(e),
+                    ),
+                )
 
         # Build the input dict for the executor
-        inputs = {
+        inputs: dict[str, Any] = {
             "input": formatted_messages,
             "tool_names": get_tool_names(parsed_tools),
             "tools": render_text_description_and_args(parsed_tools),
         }
+        if all_files:
+            inputs["files"] = all_files
 
         return executor, inputs, agent_info, parsed_tools
 
@@ -1729,12 +1848,12 @@ class Agent(BaseAgent):
         self,
         messages: str | list[LLMMessage],
         response_format: type[Any] | None = None,
+        input_files: dict[str, FileInput] | None = None,
     ) -> LiteAgentOutput | Coroutine[Any, Any, LiteAgentOutput]:
-        """
-        Execute the agent with the given messages using the AgentExecutor.
+        """Execute the agent with the given messages using the AgentExecutor.
 
         This method provides standalone agent execution without requiring a Crew.
-        It supports tools, response formatting, and guardrails.
+        It supports tools, response formatting, guardrails, and file inputs.
 
         When called from within a Flow (sync or async method), this automatically
         detects the event loop and returns a coroutine that the Flow framework
@@ -1744,7 +1863,10 @@ class Agent(BaseAgent):
             messages: Either a string query or a list of message dictionaries.
                      If a string is provided, it will be converted to a user message.
                      If a list is provided, each dict should have 'role' and 'content' keys.
+                     Messages can include a 'files' field with file inputs.
             response_format: Optional Pydantic model for structured output.
+            input_files: Optional dict of named files to attach to the message.
+                   Files can be paths, bytes, or File objects from crewai_files.
 
         Returns:
             LiteAgentOutput: The result of the agent execution.
@@ -1756,10 +1878,10 @@ class Agent(BaseAgent):
         # Magic auto-async: if inside event loop (e.g., inside a Flow),
         # return coroutine for Flow to await
         if is_inside_event_loop():
-            return self.kickoff_async(messages, response_format)
+            return self.kickoff_async(messages, response_format, input_files)
 
         executor, inputs, agent_info, parsed_tools = self._prepare_kickoff(
-            messages, response_format
+            messages, response_format, input_files
         )
 
         try:
@@ -1773,7 +1895,6 @@ class Agent(BaseAgent):
             )
 
             output = self._execute_and_build_output(executor, inputs, response_format)
-
             if self.guardrail is not None:
                 output = self._process_kickoff_guardrail(
                     output=output,
@@ -1781,6 +1902,9 @@ class Agent(BaseAgent):
                     inputs=inputs,
                     response_format=response_format,
                 )
+
+            # Save to memory after execution (passive save)
+            self._save_kickoff_to_memory(messages, output.raw)
 
             crewai_event_bus.emit(
                 self,
@@ -1802,6 +1926,31 @@ class Agent(BaseAgent):
             )
             raise
 
+    def _save_kickoff_to_memory(
+        self, messages: str | list[LLMMessage], output_text: str
+    ) -> None:
+        """Save kickoff result to memory. No-op if agent has no memory."""
+        agent_memory = getattr(self, "memory", None)
+        if agent_memory is None:
+            return
+        try:
+            if isinstance(messages, str):
+                input_str = messages
+            else:
+                input_str = "\n".join(
+                    str(msg.get("content", "")) for msg in messages if msg.get("content")
+                ) or "User request"
+            raw = (
+                f"Input: {input_str}\n"
+                f"Agent: {self.role}\n"
+                f"Result: {output_text}"
+            )
+            extracted = agent_memory.extract_memories(raw)
+            if extracted:
+                agent_memory.remember_many(extracted)
+        except Exception as e:
+            self._logger.log("error", f"Failed to save kickoff result to memory: {e}")
+
     def _execute_and_build_output(
         self,
         executor: AgentExecutor,
@@ -1822,11 +1971,17 @@ class Agent(BaseAgent):
 
         # Execute the agent (this is called from sync path, so invoke returns dict)
         result = cast(dict[str, Any], executor.invoke(inputs))
-        raw_output = result.get("output", "")
+        output = result.get("output", "")
 
         # Handle response format conversion
         formatted_result: BaseModel | None = None
-        if response_format:
+        raw_output: str
+
+        if isinstance(output, BaseModel):
+            formatted_result = output
+            raw_output = output.model_dump_json()
+        elif response_format:
+            raw_output = str(output) if not isinstance(output, str) else output
             try:
                 model_schema = generate_model_description(response_format)
                 schema = json.dumps(model_schema, indent=2)
@@ -1846,6 +2001,8 @@ class Agent(BaseAgent):
                     formatted_result = conversion_result
             except ConverterError:
                 pass  # Keep raw output if conversion fails
+        else:
+            raw_output = str(output) if not isinstance(output, str) else output
 
         # Get token usage metrics
         if isinstance(self.llm, BaseLLM):
@@ -1853,8 +2010,16 @@ class Agent(BaseAgent):
         else:
             usage_metrics = self._token_process.get_summary()
 
+        raw_str = (
+            raw_output
+            if isinstance(raw_output, str)
+            else raw_output.model_dump_json()
+            if isinstance(raw_output, BaseModel)
+            else str(raw_output)
+        )
+
         return LiteAgentOutput(
-            raw=raw_output,
+            raw=raw_str,
             pydantic=formatted_result,
             agent_role=self.role,
             usage_metrics=usage_metrics.model_dump() if usage_metrics else None,
@@ -1884,11 +2049,17 @@ class Agent(BaseAgent):
 
         # Execute the agent asynchronously
         result = await executor.invoke_async(inputs)
-        raw_output = result.get("output", "")
+        output = result.get("output", "")
 
         # Handle response format conversion
         formatted_result: BaseModel | None = None
-        if response_format:
+        raw_output: str
+
+        if isinstance(output, BaseModel):
+            formatted_result = output
+            raw_output = output.model_dump_json()
+        elif response_format:
+            raw_output = str(output) if not isinstance(output, str) else output
             try:
                 model_schema = generate_model_description(response_format)
                 schema = json.dumps(model_schema, indent=2)
@@ -1908,6 +2079,8 @@ class Agent(BaseAgent):
                     formatted_result = conversion_result
             except ConverterError:
                 pass  # Keep raw output if conversion fails
+        else:
+            raw_output = str(output) if not isinstance(output, str) else output
 
         # Get token usage metrics
         if isinstance(self.llm, BaseLLM):
@@ -1915,8 +2088,16 @@ class Agent(BaseAgent):
         else:
             usage_metrics = self._token_process.get_summary()
 
+        raw_str = (
+            raw_output
+            if isinstance(raw_output, str)
+            else raw_output.model_dump_json()
+            if isinstance(raw_output, BaseModel)
+            else str(raw_output)
+        )
+
         return LiteAgentOutput(
-            raw=raw_output,
+            raw=raw_str,
             pydantic=formatted_result,
             agent_role=self.role,
             usage_metrics=usage_metrics.model_dump() if usage_metrics else None,
@@ -2006,9 +2187,9 @@ class Agent(BaseAgent):
         self,
         messages: str | list[LLMMessage],
         response_format: type[Any] | None = None,
+        input_files: dict[str, FileInput] | None = None,
     ) -> LiteAgentOutput:
-        """
-        Execute the agent asynchronously with the given messages.
+        """Execute the agent asynchronously with the given messages.
 
         This is the async version of the kickoff method that uses native async
         execution. It is designed for use within async contexts, such as when
@@ -2018,13 +2199,16 @@ class Agent(BaseAgent):
             messages: Either a string query or a list of message dictionaries.
                      If a string is provided, it will be converted to a user message.
                      If a list is provided, each dict should have 'role' and 'content' keys.
+                     Messages can include a 'files' field with file inputs.
             response_format: Optional Pydantic model for structured output.
+            input_files: Optional dict of named files to attach to the message.
+                   Files can be paths, bytes, or File objects from crewai_files.
 
         Returns:
             LiteAgentOutput: The result of the agent execution.
         """
         executor, inputs, agent_info, parsed_tools = self._prepare_kickoff(
-            messages, response_format
+            messages, response_format, input_files
         )
 
         try:
@@ -2049,6 +2233,9 @@ class Agent(BaseAgent):
                     response_format=response_format,
                 )
 
+            # Save to memory after async execution (passive save)
+            self._save_kickoff_to_memory(messages, output.raw)
+
             crewai_event_bus.emit(
                 self,
                 event=LiteAgentExecutionCompletedEvent(
@@ -2068,6 +2255,24 @@ class Agent(BaseAgent):
                 ),
             )
             raise
+
+    async def akickoff(
+        self,
+        messages: str | list[LLMMessage],
+        response_format: type[Any] | None = None,
+        input_files: dict[str, FileInput] | None = None,
+    ) -> LiteAgentOutput:
+        """Async version of kickoff. Alias for kickoff_async.
+
+        Args:
+            messages: Either a string query or a list of message dictionaries.
+            response_format: Optional Pydantic model for structured output.
+            input_files: Optional dict of named files to attach to the message.
+
+        Returns:
+            LiteAgentOutput: The result of the agent execution.
+        """
+        return await self.kickoff_async(messages, response_format, input_files)
 
 
 # Rebuild Agent model to resolve A2A type forward references

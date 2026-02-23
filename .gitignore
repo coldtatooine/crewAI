@@ -27,3 +27,6 @@ build_image
 chromadb-*.lock
 .env.test
 .claude
+.crewai/memory
+blogs/*
+secrets/*

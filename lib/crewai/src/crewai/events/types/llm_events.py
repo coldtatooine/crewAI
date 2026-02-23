@@ -10,6 +10,7 @@ class LLMEventBase(BaseEvent):
     from_task: Any | None = None
     from_agent: Any | None = None
     model: str | None = None
+    call_id: str
 
     def __init__(self, **data: Any) -> None:
         if data.get("from_task"):
@@ -84,3 +85,4 @@ class LLMStreamChunkEvent(LLMEventBase):
     chunk: str
     tool_call: ToolCall | None = None
     call_type: LLMCallType | None = None
+    response_id: str | None = None
